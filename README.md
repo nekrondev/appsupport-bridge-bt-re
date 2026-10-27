@@ -16,10 +16,13 @@ A concrete casualty is the Sparkasse **S-pushTAN** "Verbindung übernehmen" (dev
 transfer): the *new* device must advertise a GATT service so the *old* device can connect to it.
 On the stock bridge that advertisement never goes on air, and the transfer cannot complete.
 
-This reimplementation **forwards** the container's HCI straight to the real controller — which
-fully supports LE extended advertising (16 sets on the Jolla Phone 2026 / MediaTek MT6858) — so
-advertising works, while still multiplexing the one controller between the container and host
-BlueZ.
+This reimplementation fixes that **the way Jolla's bridge intended** — no HCI shortcut. It
+intercepts the container's extended-advertising commands and registers the advertisement with the
+host's BlueZ (`org.bluez.LEAdvertisingManager1.RegisterAdvertisement`), the same mechanism Jolla
+already uses for *legacy* advertising, while the GATT server stays in the Android container and the
+incoming peripheral connection is routed back to it. It still multiplexes the one controller between
+the container and host BlueZ. Verified end-to-end on the Jolla Phone 2026 (MediaTek MT6858, 16
+extended advertising sets): advertise → a second phone connects → GATT services read → reconnect.
 
 ## What it does / doesn't
 

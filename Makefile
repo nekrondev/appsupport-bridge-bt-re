@@ -34,7 +34,11 @@ else
   LIBS    ?= -lgbinder -lglibutil -lglib-2.0 -lgobject-2.0 -lgio-2.0
 endif
 
-SRC := src/main.c src/hci.c src/gbinder_svc.c src/vhci.c src/mux.c src/config.c src/rfkill.c
+# Resolve shared-library-internal deps (libgio -> libgmodule/libselinux) at runtime on the
+# device rather than at link time (the cross sysroot doesn't carry glib's transitive deps).
+LDFLAGS += -Wl,--allow-shlib-undefined
+
+SRC := src/main.c src/hci.c src/gbinder_svc.c src/vhci.c src/mux.c src/config.c src/rfkill.c src/bluez_adv.c
 OBJ := $(SRC:.c=.o)
 BIN := appsupport-bridge-bt
 

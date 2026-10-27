@@ -13,6 +13,7 @@
  *     success without touching the controller; clear removes only the caller's entries.
  */
 #include "mux.h"
+#include "bluez_adv.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -45,6 +46,7 @@ void mux_free(App *app)
     if (app->conn_owner)   { g_hash_table_destroy(app->conn_owner); app->conn_owner = NULL; }
     if (app->reslist)      { g_hash_table_destroy(app->reslist); app->reslist = NULL; }
     if (app->acclist)      { g_hash_table_destroy(app->acclist); app->acclist = NULL; }
+    if (app->badv)         { bluez_adv_free(app->badv); app->badv = NULL; }
 }
 
 /* ---- delivery ---- */
@@ -67,13 +69,67 @@ static void deliver_both(App *app, const uint8_t *buf, gsize len)
     deliver(app, ORIG_BLUEZ, buf, len);
 }
 
-/* synthesize a status-only Command Complete back to one consumer */
-static void synth_cc(App *app, Origin o, uint16_t op, uint8_t status)
+/* synthesize a Command Complete (status + optional extra return params) to one consumer */
+static void synth_cc_ret(App *app, Origin o, uint16_t op, uint8_t status,
+                         const uint8_t *ret, uint8_t retn)
 {
-    uint8_t e[7] = { H4_EVT, 0x0e, 0x04, 0x01,
-                     (uint8_t)(op & 0xff), (uint8_t)(op >> 8), status };
+    uint8_t e[32];
+    if (retn > sizeof e - 7) retn = 0;
+    e[0]=H4_EVT; e[1]=0x0e; e[2]=(uint8_t)(4+retn); e[3]=0x01;
+    e[4]=(uint8_t)(op&0xff); e[5]=(uint8_t)(op>>8); e[6]=status;
+    if (retn) memcpy(e+7, ret, retn);
     DBG("SYNTH CC op=0x%04x status=0x%02x -> %s", op, status, onm(o));
-    deliver(app, o, e, sizeof e);
+    deliver(app, o, e, 7u+retn);
+}
+static void synth_cc(App *app, Origin o, uint16_t op, uint8_t status)
+{ synth_cc_ret(app, o, op, status, NULL, 0); }
+
+/* ---- Jolla-style advertising: container advert -> host BlueZ LEAdvertisingManager1 ---- */
+static void adv_start(App *app)
+{
+    if (!app->badv) {
+        GError *e = NULL;
+        app->badv = bluez_adv_new(app->bluez_adapter ? app->bluez_adapter : "/org/bluez/hci1", &e);
+        if (!app->badv) { g_warning("bluez_adv_new: %s", e?e->message:"?"); g_clear_error(&e); return; }
+    }
+    GError *e = NULL;
+    if (bluez_adv_register(app->badv, app->adv_connectable,
+                           app->adv_data, app->adv_data_len,
+                           app->scan_rsp, app->scan_rsp_len, &e))
+        app->adv_for_container = TRUE;
+    else { g_warning("RegisterAdvertisement failed: %s", e?e->message:"?"); g_clear_error(&e); }
+}
+static void adv_stop(App *app)
+{
+    if (app->badv) bluez_adv_unregister(app->badv);
+    app->adv_for_container = FALSE;
+}
+
+/* Intercept the container's extended-advertising commands (do NOT forward to the controller);
+ * register the advertisement with BlueZ instead. Returns TRUE if handled. */
+static gboolean virt_adv(App *app, Origin o, uint16_t op, const uint8_t *buf, gsize len)
+{
+    if (o != ORIG_CONTAINER) return FALSE;
+    switch (op) {
+    case 0x2036:                                  /* Set Extended Advertising Parameters */
+        if (len >= 7) app->adv_connectable = (buf[5] & 0x01) != 0;
+        { uint8_t tx = 0x00; synth_cc_ret(app, o, op, 0x00, &tx, 1); } /* status + selected_tx_power */
+        return TRUE;
+    case 0x2037:                                  /* Set Extended Advertising Data */
+        if (len >= 8) { gsize dl = buf[7]; if (dl > sizeof app->adv_data) dl = sizeof app->adv_data;
+                        if (len >= 8 + dl) { memcpy(app->adv_data, buf + 8, dl); app->adv_data_len = dl; } }
+        synth_cc(app, o, op, 0x00); return TRUE;
+    case 0x2038:                                  /* Set Extended Scan Response Data */
+        if (len >= 8) { gsize dl = buf[7]; if (dl > sizeof app->scan_rsp) dl = sizeof app->scan_rsp;
+                        if (len >= 8 + dl) { memcpy(app->scan_rsp, buf + 8, dl); app->scan_rsp_len = dl; } }
+        synth_cc(app, o, op, 0x00); return TRUE;
+    case 0x2039:                                  /* Set Extended Advertising Enable */
+        if (len >= 5 && buf[4]) adv_start(app); else adv_stop(app);
+        synth_cc(app, o, op, 0x00); return TRUE;
+    case 0x203c: case 0x203d:                     /* Remove / Clear Advertising Set(s) */
+        adv_stop(app); synth_cc(app, o, op, 0x00); return TRUE;
+    default: return FALSE;
+    }
 }
 
 /* ---- connection-handle ownership ---- */
@@ -266,6 +322,7 @@ void mux_submit(App *app, Origin origin, const uint8_t *buf, gsize len)
         if (origin != ORIG_INTERNAL && virt_handle_command(app, origin, buf, len))
             return;                                  /* handled via virtualization */
         uint16_t op = buf[1] | (buf[2] << 8);
+        if (virt_adv(app, origin, op, buf, len)) return;   /* container advertising -> BlueZ */
         if (origin == ORIG_CONTAINER && op == 0x2043 && app->quirk_ext_conn_to_legacy) {
             uint8_t *leg = NULL; gsize ll = 0;
             if (convert_ext_conn_to_legacy(buf, len, &leg, &ll)) {
@@ -413,6 +470,9 @@ static void route_async(App *app, const uint8_t *buf, gsize len)
         if ((sub == 0x01 || sub == 0x0a) && len >= 8) { /* (Enhanced) Connection Complete */
             uint8_t status = buf[4]; guint h = buf[5] | (buf[6] << 8); uint8_t role = buf[7];
             int owner = (role == 0x01) ? app->adv_owner : app->initiator;
+            /* A peripheral connection from a BlueZ-registered AppSupport advert belongs to the
+             * container (its GATT server answers), even though BlueZ drove the advertising. */
+            if (role == 0x01 && app->adv_for_container) owner = ORIG_CONTAINER;
             if (status == 0x00 && owner >= 0) conn_set(app, h, owner);
             if (owner >= 0) { deliver(app, owner, buf, len); return; }
         } else if (sub == 0x02 || sub == 0x0d) {        /* (Extended) Advertising Report */

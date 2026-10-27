@@ -42,6 +42,15 @@ typedef struct App {
     /* per-model quirks from /etc/appsupport-bridge-bt.conf (config.c) */
     gboolean               quirk_ext_conn_to_legacy; /* convert 0x2043 -> 0x200d for the container */
 
+    /* Jolla-style advertising: the container's advertising is routed to host BlueZ via
+     * LEAdvertisingManager1 (bluez_adv.c) instead of driven on the controller directly. */
+    char                  *bluez_adapter;   /* /org/bluez/hciN (the vhci BlueZ manages) */
+    struct BluezAdv       *badv;            /* lazily created on first advertise */
+    gboolean               adv_for_container;/* an AppSupport advert is registered with BlueZ */
+    gboolean               adv_connectable;  /* from LE Set Ext Adv Params event properties */
+    uint8_t                adv_data[256];    gsize adv_data_len;
+    uint8_t                scan_rsp[256];    gsize scan_rsp_len;
+
     /* rfkill coordination (rfkill.c) */
     void                  *rfkill;       /* opaque RfkillMon* */
 } App;

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "bridge.h"
+#include "bluez_adv.h"
 
 /* ---- capture stubs for the functions mux.c calls ---- */
 static uint8_t cont_buf[1024]; static int cont_len, cont_n;
@@ -23,6 +24,15 @@ gboolean vhci_write(VhciChannel *v, const uint8_t *b, gsize l, GError **e)
 { (void)v; (void)e; memcpy(bz_buf, b, l); bz_len = (int)l; bz_n++; return TRUE; }
 gboolean hci_channel_write(HciChannel *c, const uint8_t *b, gsize l, GError **e)
 { (void)c; (void)e; memcpy(ctrl_buf, b, l); ctrl_len = (int)l; ctrl_n++; return TRUE; }
+
+/* bluez_adv stubs (the mux calls into it for the BlueZ advertising path) */
+BluezAdv *bluez_adv_new(const char *a, GError **e) { (void)a; (void)e; return (BluezAdv*)1; }
+void      bluez_adv_free(BluezAdv *b) { (void)b; }
+gboolean  bluez_adv_register(BluezAdv *b, gboolean c, const uint8_t *a, gsize al,
+                             const uint8_t *s, gsize sl, GError **e)
+{ (void)b;(void)c;(void)a;(void)al;(void)s;(void)sl;(void)e; return TRUE; }
+void      bluez_adv_unregister(BluezAdv *b) { (void)b; }
+gboolean  bluez_adv_is_registered(BluezAdv *b) { (void)b; return FALSE; }
 
 #include "mux.c"   /* pull in the statics + mux_init/submit/on_event */
 

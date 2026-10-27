@@ -58,14 +58,33 @@ calls the send-to-container helper).
   to real generators that store params/data and register the advert with **BlueZ**
   (`LEAdvertisingManager1.RegisterAdvertisement`, `org.bluez.LEAdvertisement1`).
 
-**Correct behaviour for the reimplementation (two valid strategies — pick one, keep the other
-documented):**
-- **(preferred) Implement extended advertising properly:** report real caps for 0x203a/0x203b,
-  accept 0x2036/37/38/39 and register the advertisement with BlueZ; return well-formed CCs
-  (0x2036 CC = `status, selected_tx_power`). Modern, matches controller capability.
-- **(fallback, proven on-air) Present legacy-only:** clear the LE Extended-Advertising feature bit in
-  the `0x2003` reply and zero vendor `max_advt_instances`, so the stock GD stack uses the legacy path
-  we already know radiates through BlueZ. Simpler; loses extended-only features.
+**What the reimplementation does (the Jolla-intended path, verified on air):** go the way Jolla's
+bridge wired the *legacy* path — register the advertisement with **BlueZ**
+(`LEAdvertisingManager1.RegisterAdvertisement`, `org.bluez.LEAdvertisement1`) — but wire it up for the
+**extended** opcodes the container's GD stack actually uses, so advertising works without stubbing or
+byte-patching. GATT stays in the container; only the advertisement itself is handed to BlueZ.
+
+Concretely (`virt_adv()` in `mux.c` + `bluez_adv.c`), the container's extended-advertising commands are
+**intercepted and not forwarded to the controller**; each is answered with a well-formed synthesized
+Command-Complete, and the advertisement is mirrored onto BlueZ:
+- `0x2036` Set Ext Adv Params → record `connectable` (event_properties bit0); CC = `status, selected_tx_power`.
+- `0x2037` Set Ext Adv Data / `0x2038` Set Ext Scan Response Data → stash the AD/scan-response bytes; CC ok.
+- `0x2039` Set Ext Adv Enable → on enable, build an `org.bluez.LEAdvertisement1` from the stashed AD
+  (names 0x08/09, 16-/128-bit UUIDs 0x02/03/06/07, service data 0x16/21, manufacturer 0xFF, TX-power 0x0a)
+  and call `RegisterAdvertisement` **asynchronously**; on disable, `UnregisterAdvertisement`. CC ok.
+- `0x203c/0x203d` Remove / Clear Advertising Set → unregister; CC ok.
+- `0x203a/0x203b` (max adv len / **number of supported sets**) are **forwarded to the real controller**,
+  which honestly reports 16 sets — so the GD stack can allocate advertisers (this is exactly what the
+  stock bridge's `0x203b` stub broke).
+
+`RegisterAdvertisement` must be **async** (`g_dbus_connection_call` + callback, not the sync variant):
+BlueZ reads this object's D-Bus properties *during* the register call, so the main loop has to stay free
+to answer them — a sync call from the loop deadlocks (observed as a 5 s timeout, then `AlreadyExists` on
+retry even though the advert was already on air). The callback treats `AlreadyExists` as success, and
+`LEAdvertisement1.Release` (BlueZ drops the advert, e.g. after a peripheral connection) clears the
+registered flag. The resulting inbound peripheral connection is bound back to the container
+(`adv_for_container` → the Enhanced/Connection-Complete with role=slave is routed to `ORIG_CONTAINER`),
+so the Android app owns the GATT link.
 
 ## 4. Other virtualization the clone must preserve (from strings/behaviour)
 
@@ -80,7 +99,8 @@ documented):**
 ## 5. Dependencies / build
 
 aarch64, links: `libgbinder` (container HIDL), `glib-2.0`/`gobject`/`gio` (loop + GDBus to BlueZ),
-`libglibutil`. Drop Qt5 (original used Qt D-Bus; we use **GDBus**). Cross-built on `monica` with
+`libglibutil`. Drop Qt5 (original used Qt D-Bus for `RegisterAdvertisement`; we use **GDBus** —
+`bluez_adv.c`). Cross-built on `monica` with
 `aarch64-linux-gnu-gcc`, headers from upstream `libgbinder`/`libglibutil` + distro glib, linked
 against the device's aarch64 `.so`s. Install path `/usr/sbin/appsupport-bridge-bt`; service
 `appsupport-bridge-bt.service`.
@@ -90,7 +110,8 @@ against the device's aarch64 `.so`s. Install path `/usr/sbin/appsupport-bridge-b
 1. **Scaffold + HCI channel** (this stage): glib loop, exclusive hci0 user-channel, event read/log.
 2. **gbinder IBluetoothHci service**: register, handle initialize/sendHciCommand/close, deliver events.
 3. **vhci + BlueZ relay**: create hci1, relay hci1↔hci0, GDBus to org.bluez.
-4. **HCI mux + opcode handling**: forward/synthesize per OCF; **advertising fixed** per §3.
+4. **HCI mux + opcode handling**: forward/synthesize per OCF; **advertising fixed** per §3
+   (intercept ext-adv opcodes → BlueZ `RegisterAdvertisement`; bind the connection back to the container).
 5. **rfkill + quirks + config**; soak-test advertise→connect→re-advertise vs. the stock bridge.
 
 ## 7. Implementation status
@@ -102,7 +123,8 @@ against the device's aarch64 `.so`s. Install path `/usr/sbin/appsupport-bridge-b
 | gbinder `IBluetoothHci@1.0` service | gbinder_svc.c | ✅ verified (container BT comes up ON) |
 | HCI command mux + credits + response demux | mux.c | ✅ verified |
 | Connection/scan/adv ownership routing | mux.c | ✅ verified (16 adv sets exposed) |
-| Advertising | (native forward) | ✅ 16 sets, extended — fixes the bug by construction |
+| Advertising (Jolla-intended BlueZ path) | bluez_adv.c + mux.c `virt_adv` | ✅ verified on device: advertise → old phone connects → GATT services read → reconnect, all working (nRF Connect across two phones) |
+| Inbound peripheral connection → container | mux.c (`adv_for_container`) | ✅ verified (Android app owns the GATT link) |
 | Scan enable/disable arbitration | mux.c | ✅ unit-tested (`test/mux_test.c`) |
 | Resolving-list / accept-list virtualization | mux.c | ✅ unit-tested |
 | Scan-report ext→legacy conversion | mux.c | ✅ unit-tested |
@@ -126,4 +148,4 @@ Only genuine remaining difference vs Jolla: exact byte-for-byte parity of the in
 
 Test harness: `run-temp.sh` (stops Jolla's bridge, runs this one, restores on Ctrl-C).
 Debug log tags: `CMD<-`, `EVT<-ctrl`, `SYNTH`, `CMD<-INT`, `rfkill:`, `config:`, `quirk:`,
-`hid vendor APCF`.
+`hid vendor APCF`, `bluez_adv:` (advertising: `registering …`, `RegisterAdvertisement ok`, `Release`).

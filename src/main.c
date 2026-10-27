@@ -64,6 +64,9 @@ int main(int argc, char **argv)
                   err ? err->message : "?");
         g_clear_error(&err);
     }
+    /* Adapter BlueZ manages (the vhci) — where we register AppSupport advertisements. */
+    app.bluez_adapter = g_strdup_printf("/org/bluez/hci%d",
+                            (app.vhci && vhci_index(app.vhci) >= 0) ? vhci_index(app.vhci) : 1);
 
     if (!gbinder_svc_start(&app)) {
         g_printerr("fatal: could not start gbinder service\n");
@@ -80,6 +83,7 @@ int main(int argc, char **argv)
     vhci_close(app.vhci);
     hci_channel_close(app.hci0);
     mux_free(&app);
+    g_free(app.bluez_adapter);
     g_main_loop_unref(app.loop);
     return 0;
 }
