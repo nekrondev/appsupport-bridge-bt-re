@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build-aarch64:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Build natively for aarch64 inside an emulated arm64 container. glib comes from the
+      # distro; the only Sailfish-specific deps (libgbinder, libglibutil) are vendored in
+      # ./vendor, pinned to a Sailfish OS release, so the binary is ABI-matched to the device.
+      - name: Set up QEMU (arm64)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build + unit-test (native aarch64)
+        run: |
+          docker run --rm --platform linux/arm64 -v "$PWD":/work -w /work \
+            arm64v8/ubuntu:24.04 bash -euxo pipefail -c '
+              export DEBIAN_FRONTEND=noninteractive
+              apt-get update
+              apt-get install -y --no-install-recommends \
+                gcc make pkg-config file libglib2.0-dev
+              make MODE=vendored-release CROSS=
+              file appsupport-bridge-bt
+              make MODE=vendored-release test
+            '
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: appsupport-bridge-bt-aarch64
+          path: appsupport-bridge-bt
+          if-no-files-found: error

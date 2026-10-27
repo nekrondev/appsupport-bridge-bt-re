@@ -1,0 +1,14 @@
+# build artifacts
+*.o
+/appsupport-bridge-bt
+
+# editor / OS cruft
+*~
+*.swp
+.DS_Store
+.vscode/
+
+# local scratch
+/tmp/
+
+# NOTE: vendor/lib/*.so.* are intentionally committed (release-pinned deps) — not ignored.

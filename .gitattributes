@@ -1,0 +1,11 @@
+# Normalize text to LF in the repo (keeps shell scripts runnable on the device,
+# regardless of the checkout platform).
+* text=auto eol=lf
+
+# Shell scripts and Makefile must be LF.
+*.sh      text eol=lf
+Makefile  text eol=lf
+
+# Binary blobs — never convert line endings.
+*.so      binary
+*.so.*    binary
