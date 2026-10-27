@@ -109,7 +109,7 @@ against the device's aarch64 `.so`s. Install path `/usr/sbin/appsupport-bridge-b
 | Vendor-cap APCF filter hiding (0xFD53) | mux.c | ✅ unit-tested |
 | Command-complete demux + credit flow | mux.c | ✅ unit-tested + verified on device |
 | Per-model quirk (ext-conn→legacy) + config | config.c + mux.c | ✅ conversion unit-tested (quirk off for this model); config-file read not unit-tested |
-| rfkill coordination | rfkill.c | ⚠️ compiled; I/O-bound, not unit-tested (needs a device rfkill toggle to exercise) |
+| rfkill coordination | rfkill.c | ✅ verified on device (`rfkill block bluetooth` → bridge re-unblocked the switch; AppSupport BT stayed up) |
 
 Validation: `make test` builds `test/mux_test.c` (host-native, stubs the I/O) and runs 26 assertions
 over the mux logic — scan arbitration, list virtualization, report conversion, APCF hiding, the
