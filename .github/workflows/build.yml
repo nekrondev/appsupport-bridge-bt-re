@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-aarch64:
     runs-on: ubuntu-latest
@@ -38,3 +41,27 @@ jobs:
           name: appsupport-bridge-bt-aarch64
           path: appsupport-bridge-bt
           if-no-files-found: error
+
+      - name: Prepare release assets
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: cp appsupport-bridge-bt abbr
+
+      - name: Publish latest release
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Rolling build from `main` (`${{ github.sha }}`).
+
+            Download `abbr` and `run-temp.sh`, copy both to the phone under `/home/defaultuser/`, then:
+
+            ```sh
+            devel-su sh run-temp.sh
+            ```
+          files: |
+            abbr
+            run-temp.sh
+          overwrite_files: true
+          make_latest: true
